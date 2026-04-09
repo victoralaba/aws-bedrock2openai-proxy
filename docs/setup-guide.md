@@ -2,7 +2,7 @@
 
 ## 背景
 
-作为 AWS IAM 用户，拥有 Bedrock API Key（`ABSK...` 格式），希望通过 OpenAI API 兼容接口使用 Bedrock 上的 Claude 模型，以便在 Cursor IDE 等工具中使用。
+作为 AWS IAM 用户，拥有 Bedrock API Key（`ABSK...` 格式），希望通过 OpenAI API 兼容接口使用 Bedrock 上的 Claude 模型，以便在各类 AI 工具（Cursor、Continue、ChatBox、OpenAI SDK 等）中使用。
 
 AWS Bedrock 虽然提供了 OpenAI 兼容端点（`bedrock-runtime.{region}.amazonaws.com/compatible-apis/v1`），但该端点使用 SigV4 签名认证，无法直接用 Bearer Token。因此需要本地代理做协议转换。
 
@@ -11,7 +11,10 @@ AWS Bedrock 虽然提供了 OpenAI 兼容端点（`bedrock-runtime.{region}.amaz
 ```
 Cursor / OpenAI SDK
         |
-        | OpenAI API 格式 (HTTP)
+        | OpenAI API 格式 (HTTPS)
+        v
+ngrok (公网 URL)           ← Cursor 需要公网地址
+        |
         v
 Flask 本地代理 (localhost:PORT)
         |
@@ -28,6 +31,7 @@ Claude 模型
 - Python 3.10+
 - AWS Bedrock API Key（`ABSK...` 格式的 Bearer Token）
 - 已开通 Bedrock 上的 Claude 模型访问权限
+- [ngrok](https://ngrok.com/)（用于在 Cursor 中使用，本地 curl 测试不需要）
 
 ## 搭建步骤
 
@@ -110,13 +114,36 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{"model":"claude-opus","messages":[{"role":"user","content":"hello"}],"stream":true}'
 ```
 
-### 5. 在 Cursor 中配置
+### 5. 在本地工具中使用
 
-打开 Cursor 设置，配置 OpenAI API：
+任何支持 OpenAI API 的工具都可以直接连接代理：
 
 - **Base URL**: `http://localhost:8000/v1`
 - **API Key**: 任意非空字符串（如 `sk-placeholder`，代理不校验此值）
 - **Model**: 使用模型别名（见下表）
+
+适用于 OpenAI Python/JS SDK、curl、ChatBox 等本地工具。
+
+### 6. 通过 ngrok 暴露给远程工具
+
+部分工具（如 Cursor、Continue）从云端发起请求，无法直接访问 localhost。需要用 ngrok 将代理暴露到公网：
+
+```bash
+ngrok http 8000  # 端口号与 PROXY_PORT 一致
+```
+
+ngrok 启动后会显示公网 URL，例如：
+```
+Forwarding  https://xxxx-xx-xx-xx-xx.ngrok-free.app -> http://localhost:8000
+```
+
+然后在工具中配置：
+
+- **Base URL**: `https://xxxx-xx-xx-xx-xx.ngrok-free.app/v1`
+- **API Key**: 任意非空字符串
+- **Model**: 使用模型别名（见下表）
+
+> **注意**：免费版 ngrok 每次重启会分配新的 URL，需要同步更新工具配置。付费版可以绑定固定域名。
 
 ## 可用模型别名
 

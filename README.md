@@ -1,10 +1,10 @@
 # AWS Bedrock to OpenAI API Proxy
 
-A lightweight Flask proxy that exposes AWS Bedrock's Claude models through an OpenAI-compatible API. Use it with Cursor, Continue, or any tool that supports the OpenAI API format.
+A lightweight Flask proxy that exposes AWS Bedrock's LLM models through an OpenAI-compatible API. Use it with any tool that supports the OpenAI API format — Cursor, Continue, ChatBox, OpenAI SDK, and more.
 
 ## Why
 
-AWS Bedrock requires SigV4 signing or its own SDK. Most AI coding tools (Cursor, etc.) only speak the OpenAI API protocol. This proxy bridges the gap — it accepts OpenAI-format requests on localhost and forwards them to Bedrock using a simple API key (Bearer Token).
+AWS Bedrock requires SigV4 signing or its own SDK. Most AI tools and clients only speak the OpenAI API protocol. This proxy bridges the gap — it accepts OpenAI-format requests and forwards them to Bedrock using a simple API key (Bearer Token).
 
 ## Quick Start
 
@@ -54,13 +54,33 @@ Use short aliases instead of full Bedrock model IDs:
 
 Full Bedrock model IDs (containing `anthropic.claude`) are also accepted and passed through directly.
 
-## Use with Cursor
+## Usage
 
-1. Start the proxy: `python app.py`
-2. In Cursor settings, configure OpenAI API:
-   - **Base URL**: `http://localhost:8000/v1`
-   - **API Key**: any non-empty string (e.g. `sk-placeholder`)
-   - **Model**: `claude-opus`, `claude-sonnet`, or any alias above
+### Local access
+
+Any OpenAI-compatible client can connect directly to the proxy:
+
+- **Base URL**: `http://localhost:8000/v1`
+- **API Key**: any non-empty string (e.g. `sk-placeholder`)
+- **Model**: `claude-opus`, `claude-sonnet`, or any alias from the table above
+
+Works with the OpenAI Python/JS SDK, curl, ChatBox, and other local tools.
+
+### Remote access (Cursor, Continue, etc.)
+
+Some tools (like Cursor) send API requests from their cloud servers and cannot reach localhost. Use [ngrok](https://ngrok.com/) to expose the proxy:
+
+```bash
+ngrok http 8000  # match your PROXY_PORT
+```
+
+Then configure the tool with the ngrok public URL:
+
+- **Base URL**: `https://xxxx-xx-xx-xx-xx.ngrok-free.app/v1`
+- **API Key**: any non-empty string
+- **Model**: `claude-opus`, `claude-sonnet`, or any alias
+
+> **Note**: Free ngrok URLs change on every restart. Paid plans support fixed domains.
 
 ## Test with curl
 
@@ -91,6 +111,9 @@ Tests all 20 Bedrock-supported regions and reports latency.
 ```
 Client (Cursor / curl / OpenAI SDK)
   │  OpenAI API format
+  ▼
+ngrok (public URL)          ← needed for Cursor
+  │
   ▼
 Flask Proxy (localhost)
   │  Bedrock Converse API (boto3 + Bearer Token)
