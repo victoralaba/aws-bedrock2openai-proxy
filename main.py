@@ -70,6 +70,17 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+@app.on_event("startup")
+async def startup_event():
+    log.info(f"🚀 Starting Bedrock Mantle Proxy on http://localhost:{PORT}")
+    log.info(f"📍 AI Model URL: {MANTLE_BASE}")
+    log.info(f"🌍 AWS Region: {AWS_REGION}")
+    log.info(f"Base URL is http://localhost:{PORT}/v1")
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 @app.get("/health", tags=["Meta"])
