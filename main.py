@@ -6,8 +6,10 @@ import time
 from typing import AsyncGenerator, Optional
 
 import boto3
+import botocore.auth
+import botocore.awsrequest
+from botocore.session import Session as BotocoreSession
 import httpx
-from aws_requests_auth.boto_utils import BotoAWSRequestsAuth
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -32,18 +34,22 @@ PORT = int(os.getenv("PORT", "8080"))
 TEST_MAX_TOKENS = int(os.getenv("TEST_MAX_TOKENS", "1"))  # keep test costs minimal
 
 # ---------------------------------------------------------------------------
-# AWS auth — reads from ~/.aws/config, env vars, or IAM role automatically
+# AWS auth — module-level session, credentials cached once
 # ---------------------------------------------------------------------------
-def get_auth() -> BotoAWSRequestsAuth:
-    session = boto3.Session(region_name=AWS_REGION)
-    credentials = session.get_credentials()
-    if credentials is None:
-        raise RuntimeError("Unable to locate AWS credentials")
-    return BotoAWSRequestsAuth(
-        aws_host=f"bedrock-mantle.{AWS_REGION}.api.aws",
-        aws_region=AWS_REGION,
-        aws_service="bedrock",
+_botocore_session = BotocoreSession()
+_credentials = _botocore_session.get_credentials()
+if _credentials is None:
+    raise RuntimeError("Unable to locate AWS credentials")
+
+def get_signed_headers(method: str, url: str, body: bytes = b"") -> dict:
+    request = botocore.awsrequest.AWSRequest(
+        method=method,
+        url=url,
+        data=body,
+        headers={"Content-Type": "application/json"},
     )
+    botocore.auth.SigV4Auth(_credentials, "bedrock", AWS_REGION).add_auth(request)
+    return dict(request.headers)
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +83,10 @@ async def health():
 @app.get("/v1/models", tags=["Models"])
 async def list_models():
     """List all models available via bedrock-mantle."""
-    auth = get_auth()
+    url = f"{MANTLE_BASE}/models"
+    headers = get_signed_headers("GET", url)
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"{MANTLE_BASE}/models", auth=auth)
+        resp = await client.get(url, headers=headers)
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
@@ -88,16 +95,13 @@ async def list_models():
 # ---------------------------------------------------------------------------
 # Chat completions proxy
 # ---------------------------------------------------------------------------
-async def _stream_mantle(body: dict, auth) -> AsyncGenerator[bytes, None]:
+async def _stream_mantle(body: dict) -> AsyncGenerator[bytes, None]:
     """Forward a streaming request to mantle and yield SSE chunks."""
+    url = f"{MANTLE_BASE}/chat/completions"
+    raw = json.dumps(body).encode()
+    headers = get_signed_headers("POST", url, raw)
     async with httpx.AsyncClient(timeout=120) as client:
-        async with client.stream(
-            "POST",
-            f"{MANTLE_BASE}/chat/completions",
-            json=body,
-            auth=auth,
-            headers={"Content-Type": "application/json"},
-        ) as resp:
+        async with client.stream("POST", url, content=raw, headers=headers) as resp:
             if resp.status_code != 200:
                 error_body = await resp.aread()
                 yield b"data: " + json.dumps({"error": error_body.decode()}).encode() + b"\n\n"
@@ -118,24 +122,20 @@ async def chat_completions(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-    auth = get_auth()
     stream = body.get("stream", False)
-
     log.info("→ %s | stream=%s | tokens=%s", body.get("model"), stream, body.get("max_tokens"))
 
     if stream:
         return StreamingResponse(
-            _stream_mantle(body, auth),
+            _stream_mantle(body),
             media_type="text/event-stream",
         )
 
+    url = f"{MANTLE_BASE}/chat/completions"
+    raw = json.dumps(body).encode()
+    headers = get_signed_headers("POST", url, raw)
     async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            f"{MANTLE_BASE}/chat/completions",
-            json=body,
-            auth=auth,
-            headers={"Content-Type": "application/json"},
-        )
+        resp = await client.post(url, content=raw, headers=headers)
 
     if resp.status_code != 200:
         log.warning("Mantle error %s: %s", resp.status_code, resp.text)
@@ -155,21 +155,19 @@ class TestResult(BaseModel):
     error: Optional[str] = None
 
 
-async def _test_model(model_id: str, auth) -> TestResult:
+async def _test_model(model_id: str) -> TestResult:
+    url = f"{MANTLE_BASE}/chat/completions"
     payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": "Hello, are you working?"}],
         "max_tokens": TEST_MAX_TOKENS,
     }
+    raw = json.dumps(payload).encode()
     start = time.monotonic()
     try:
+        headers = get_signed_headers("POST", url, raw)
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{MANTLE_BASE}/chat/completions",
-                json=payload,
-                auth=auth,
-                headers={"Content-Type": "application/json"},
-            )
+            resp = await client.post(url, content=raw, headers=headers)
         latency_ms = round((time.monotonic() - start) * 1000, 1)
 
         if resp.status_code == 200:
@@ -203,8 +201,7 @@ async def test_model(model_id: str):
     Test a specific model with a minimal prompt.
     Returns the response and latency in ms.
     """
-    auth = get_auth()
-    result = await _test_model(model_id, auth)
+    result = await _test_model(model_id)
     return result
 
 
@@ -215,18 +212,17 @@ async def test_all_models():
     Cost is minimal (max_tokens=1 per model).
     Returns ok/fail + latency for each.
     """
-    auth = get_auth()
-
-    # Fetch model list
+    url = f"{MANTLE_BASE}/models"
+    headers = get_signed_headers("GET", url)
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"{MANTLE_BASE}/models", auth=auth)
+        resp = await client.get(url, headers=headers)
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail="Failed to fetch model list")
 
     models = [m["id"] for m in resp.json().get("data", [])]
     log.info("Testing %d models...", len(models))
 
-    results = await asyncio.gather(*[_test_model(mid, auth) for mid in models])
+    results = await asyncio.gather(*[_test_model(mid) for mid in models])
 
     ok = [r for r in results if r.status == "ok"]
     fail = [r for r in results if r.status == "error"]
