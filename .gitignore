@@ -1,9 +1,12 @@
+.env
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.idea/
+.vscode/
 *.egg-info/
 dist/
 build/
-.env
-.venv/
-venv/
-.claude/
