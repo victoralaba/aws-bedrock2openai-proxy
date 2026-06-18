@@ -36,7 +36,9 @@ TEST_MAX_TOKENS = int(os.getenv("TEST_MAX_TOKENS", "1"))  # keep test costs mini
 # ---------------------------------------------------------------------------
 def get_auth() -> BotoAWSRequestsAuth:
     session = boto3.Session(region_name=AWS_REGION)
-    credentials = session.get_credentials().resolve()
+    credentials = session.get_credentials()
+    if credentials is None:
+        raise RuntimeError("Unable to locate AWS credentials")
     return BotoAWSRequestsAuth(
         aws_host=f"bedrock-mantle.{AWS_REGION}.api.aws",
         aws_region=AWS_REGION,
